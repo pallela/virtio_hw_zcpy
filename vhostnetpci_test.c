@@ -12,8 +12,10 @@
 #include<signal.h>
 #include"pcap_rxtx.h"
 #include<semaphore.h>
+#include"dma_rxtx.h"
 
-#define SOCKPATH "/usr/local/var/run/openvswitch/vhost-user1"
+//#define SOCKPATH "/usr/local/var/run/openvswitch/vhost-user1"
+#define SOCKPATH "vhost-user1"
 
 
 pcap_t *handle;
@@ -85,7 +87,8 @@ sem_t tx_clean_wait_sem,rx_clean_wait_sem;
 
 
 static unsigned char rx_packet_buff[10*1024];
-static unsigned char tx_packet_buff[10*1024];
+//static unsigned char tx_packet_buff[10*1024];
+unsigned char *tx_packet_buff;
 
 
 void * transmit_thread(void *args)
@@ -128,11 +131,11 @@ void * transmit_thread(void *args)
 			//i = 0;
 			while(new_avail_descs--){
 
-				//printf("packet no : %d\n",packet_no);
+				printf("packet no : %d\n",packet_no);
 				desc_no = tx_avail->ring[cur_avail_idx];
 				//desc_no = (desc_no + 1)%tx_desc_count;
 				packet_len = tx_desc_base[desc_no].len;
-				TXB +=  packet_len;
+				//TXB +=  packet_len;
 				//printf("total sent bytes : %d\n",TXB);
 
 				#if 1
@@ -180,7 +183,10 @@ void * transmit_thread(void *args)
 						memcpy(tx_packet_buff + tx_buff_len,packet_addr,packet_len);
 						tx_buff_len += packet_len;
 						//print_hex(tx_packet_buff,tx_buff_len);
-						pcap_tx(handle,tx_packet_buff+vhost_hlen,tx_buff_len-vhost_hlen);
+						//pcap_tx(handle,tx_packet_buff+vhost_hlen,tx_buff_len-vhost_hlen);
+						dma_tx(tx_packet_buff,tx_buff_len-vhost_hlen,vhost_hlen);
+						TXB +=  tx_buff_len-vhost_hlen;
+						printf("total sent bytes : %d\n",TXB);
 
 
 
@@ -491,7 +497,7 @@ void search_pattern(int signum)
 #endif
 
 
-main()
+main(int argc, char **argv)
 {
 	int sockfd;
 	int newsockfd;
@@ -500,9 +506,13 @@ main()
 	unsigned char rxbuff[1024],txbuff[1024];
 	int recv_bytes,ret;
 	int fdbytes;
+	int channel_no;
         struct vhost_user_msg *msg;
 	struct vhost_vring_file file;
 	struct vhost_memory *table = (struct vhost_memory *) memory_table;
+	char SOCKPATH_NEW[100];
+	char channel_str[10];
+
 
 
 	sem_init(&tx_start_wait_sem,0,0);
@@ -510,8 +520,18 @@ main()
 	sem_init(&tx_clean_wait_sem,0,0);
 	sem_init(&rx_clean_wait_sem,0,0);
 
-	handle  = pcap_init("eth0");
-	printf("pcap handle : %p\n",handle);
+	//handle  = pcap_init("eth0");
+	//printf("pcap handle : %p\n",handle);
+	channel_no = strtoul(argv[1],NULL,10)
+;
+	strcpy(SOCKPATH_NEW,SOCKPATH);
+	sprintf(channel_str,"_chn_%02d",channel_no);
+	strcat(SOCKPATH_NEW,channel_str);
+
+	printf("using dma channel : %d SOCKPATH_NEW : %s\n",channel_no,SOCKPATH_NEW);
+
+	init(channel_no);
+
 
 	#if 1
 	if(pthread_create(&tx_thread,NULL,transmit_thread,NULL)){
@@ -541,7 +561,7 @@ main()
 	}
 
 	local.sun_family = AF_UNIX;
-	strcpy(local.sun_path,SOCKPATH);
+	strcpy(local.sun_path,SOCKPATH_NEW);
 	unlink(local.sun_path);
 	len = strlen(local.sun_path) + sizeof(local.sun_family);
 

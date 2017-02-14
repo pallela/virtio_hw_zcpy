@@ -5,6 +5,7 @@
 #include <string.h>
 #include <sys/eventfd.h>
 #include<semaphore.h>
+#include"dma_rxtx.h"
 
 static bpf_u_int32 net;		/* Our IP */
 pcap_t *pcap_init(char *iname)
@@ -53,17 +54,18 @@ unsigned char mac_address[6] = {0xb8,0x2a,0x72,0xc4,0x26,0x45};
 unsigned char broadcast_mac_address[6] = {0xff,0xff,0xff,0xff,0xff,0xff};
 void *pcap_rx_thread(void *arg)
 {
-	struct bpf_program fp;		/* The compiled filter */
+//	struct bpf_program fp;		/* The compiled filter */
 	//char filter_exp[] = "ether dst 00:00:00:00:00:01 ";	/* The filter expression */
 	//char filter_exp[] = "ether dst b8:2a:72:c4:26:45 or ether dst ff:ff:ff:ff:ff:ff  or  arp";	/* The filter expression */
 	//char filter_exp[] = "ether dst b8:2a:72:c4:26:45 or  arp";	/* The filter expression */
-	char filter_exp[] = "ether dst 00:00:00:00:00:01 or  arp";	/* The filter expression */
+//	char filter_exp[] = "ether dst 00:00:00:00:00:01 or  arp";	/* The filter expression */
 	//char filter_exp[] = "";	/* The filter expression */
-	struct pcap_pkthdr header;	/* The header that pcap gives us */
+//	struct pcap_pkthdr header;	/* The header that pcap gives us */
 	const u_char *packet;		/* The actual packet */
-	pcap_t *handle;
+//	pcap_t *handle;
 	void  *tmp;
-	uint16_t *nbuffs;
+//	uint16_t *nbuffs;
+	int rx_len;
 	uint16_t rx_desc_num = 0,rx_header_desc_num = 0,rx_avail_ring_no = 0,rx_used_ring_no = 0;
 	unsigned char  *packet_addr;
 	uint32_t packet_len;
@@ -72,6 +74,7 @@ void *pcap_rx_thread(void *arg)
 	int rx_cleanup_required;
 
 
+#if 0
 	handle = (pcap_t *) arg;
 
 	printf("starting rx thread with pcap handle : %p\n",handle);
@@ -86,17 +89,25 @@ void *pcap_rx_thread(void *arg)
 		fprintf(stderr, "Couldn't install filter %s: %s\n", filter_exp, pcap_geterr(handle));
 		return;
 	}
+#endif
 
+	printf("starting rx thread\n");
 	while(1) {
 
 		/* Grab a packet */
-		packet = pcap_next(handle, &header);
-		packet_addr = (unsigned char *) packet;
+		//packet = pcap_next(handle, &header);
+		if(connected_to_guest) {
+			printf("before rx_len : %d and addr : %p\n",rx_len,packet);
+			packet = dma_rx(&rx_len);
+			printf("later rx_len : %d and addr : %p\n",rx_len,packet);
+			packet_addr = (unsigned char *) packet;
+		}
 		/* Print its length */
 
 
 #if 1
-		if(header.len > 0 && connected_to_guest) {
+		//if(header.len > 0 && connected_to_guest) {
+		if(rx_len > 0 && connected_to_guest) {
 
 			//printf("received a packet with length of [%d]\n", header.len);
 
@@ -137,12 +148,16 @@ void *pcap_rx_thread(void *arg)
 					printf("tmpheader->hdr.csum_start : %x\n",tmpheader->hdr.csum_start);
 					printf("tmpheader->hdr.csum_offset : %x\n",tmpheader->hdr.csum_offset);
 
-					if(rx_desc_base[rx_desc_num].len < (vhost_hlen + header.len)) {
+					//if(rx_desc_base[rx_desc_num].len < (vhost_hlen + header.len)) {
+					if(rx_desc_base[rx_desc_num].len < (vhost_hlen + rx_len)) {
+						//printf("receive desc buff len : %d and packet len : %d ,so dropping packet\n"
+						//		,rx_desc_base[rx_desc_num].len,header.len);
 						printf("receive desc buff len : %d and packet len : %d ,so dropping packet\n"
-								,rx_desc_base[rx_desc_num].len,header.len);
+								,rx_desc_base[rx_desc_num].len,rx_len);
 						continue;
 					}
-					packet_len = header.len;
+					//packet_len = header.len;
+					packet_len = rx_len;
 					memcpy(tmp+vhost_hlen,packet_addr,packet_len);
 					printf("recv packet : %d bytes\n",packet_len);
 	
@@ -158,16 +173,20 @@ void *pcap_rx_thread(void *arg)
 					rx_desc_num = rx_desc_base[rx_desc_num].next;
 					//printf("packet data desc no : %d\n",rx_desc_num);
 
-					if(rx_desc_base[rx_desc_num].len < header.len) {
+					//if(rx_desc_base[rx_desc_num].len < header.len) {
+					if(rx_desc_base[rx_desc_num].len < rx_len) {
+						//printf("receive desc buff len : %d and packet len : %d ,so dropping packet\n"
+						//		,rx_desc_base[rx_desc_num].len,header.len);
 						printf("receive desc buff len : %d and packet len : %d ,so dropping packet\n"
-								,rx_desc_base[rx_desc_num].len,header.len);
+								,rx_desc_base[rx_desc_num].len,rx_len);
 						continue;
 					}
 					//printf("receive desc buff len : %d and packet len : %d\n",rx_desc_base[rx_desc_num].len,header.len);
 
 					tmp = (void *)guestphyddr_to_vhostvadd(rx_desc_base[rx_desc_num].addr);
 					//printf("tmp ( packet data ): %p \n",tmp);
-					packet_len = header.len;
+					//packet_len = header.len;
+					packet_len = rx_len;
 					memcpy(tmp,packet_addr,packet_len);
 					//printf("packet copied to VM memory\n");
 				}
