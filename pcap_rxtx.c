@@ -97,9 +97,9 @@ void *pcap_rx_thread(void *arg)
 		/* Grab a packet */
 		//packet = pcap_next(handle, &header);
 		if(connected_to_guest) {
-			printf("before rx_len : %d and addr : %p\n",rx_len,packet);
+	//		printf("before rx_len : %d and addr : %p\n",rx_len,packet);
 			packet = dma_rx(&rx_len);
-			printf("later rx_len : %d and addr : %p\n",rx_len,packet);
+	//		printf("later rx_len : %d and addr : %p\n",rx_len,packet);
 			packet_addr = (unsigned char *) packet;
 		}
 		/* Print its length */
@@ -136,6 +136,7 @@ void *pcap_rx_thread(void *arg)
 					//memset(tmp,0,vhost_hlen);
 					//nbuffs = (uint16_t*) tmp+10;
 					//*nbuffs = 0x0100;
+					#if 0
 					printf("recv virtio header \n");
 					print_hex((unsigned char *)tmp,vhost_hlen);
 					tmpheader = (struct virtio_net_hdr_mrg_rxbuf *) tmp;
@@ -147,6 +148,7 @@ void *pcap_rx_thread(void *arg)
 					printf("tmpheader->hdr.hdr_len : %x\n",tmpheader->hdr.hdr_len);
 					printf("tmpheader->hdr.csum_start : %x\n",tmpheader->hdr.csum_start);
 					printf("tmpheader->hdr.csum_offset : %x\n",tmpheader->hdr.csum_offset);
+					#endif
 
 					//if(rx_desc_base[rx_desc_num].len < (vhost_hlen + header.len)) {
 					if(rx_desc_base[rx_desc_num].len < (vhost_hlen + rx_len)) {
@@ -158,8 +160,9 @@ void *pcap_rx_thread(void *arg)
 					}
 					//packet_len = header.len;
 					packet_len = rx_len;
+					memset(tmp,0,vhost_hlen);
 					memcpy(tmp+vhost_hlen,packet_addr,packet_len);
-					printf("recv packet : %d bytes\n",packet_len);
+					//printf("recv packet : %d bytes\n",packet_len);
 	
 				}
 				else {
@@ -177,8 +180,8 @@ void *pcap_rx_thread(void *arg)
 					if(rx_desc_base[rx_desc_num].len < rx_len) {
 						//printf("receive desc buff len : %d and packet len : %d ,so dropping packet\n"
 						//		,rx_desc_base[rx_desc_num].len,header.len);
-						printf("receive desc buff len : %d and packet len : %d ,so dropping packet\n"
-								,rx_desc_base[rx_desc_num].len,rx_len);
+					//	printf("receive desc buff len : %d and packet len : %d ,so dropping packet\n"
+					//			,rx_desc_base[rx_desc_num].len,rx_len);
 						continue;
 					}
 					//printf("receive desc buff len : %d and packet len : %d\n",rx_desc_base[rx_desc_num].len,header.len);
@@ -189,6 +192,7 @@ void *pcap_rx_thread(void *arg)
 					packet_len = rx_len;
 					memcpy(tmp,packet_addr,packet_len);
 					//printf("packet copied to VM memory\n");
+					rx_len = 0;
 				}
 
 				rx_avail_ring_no = (rx_avail_ring_no + 1)%rx_desc_count;
@@ -210,7 +214,7 @@ void *pcap_rx_thread(void *arg)
 				//printf("packet address is NULL\n");
 			}
 		}
-		else {
+		else if(!connected_to_guest) {
 			rx_avail_ring_no = 0;
 			rx_used_ring_no = 0;
 			if(rx_cleanup_required) {

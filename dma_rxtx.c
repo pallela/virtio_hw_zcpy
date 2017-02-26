@@ -13,6 +13,7 @@
 #define NUM_BUFFERS 64
 #define LOGGING 0
 
+extern volatile connected_to_guest;
 int channel;
 struct mydata *data;
 unsigned int * bar_base_user;
@@ -58,6 +59,55 @@ void xdma_engine_stop(struct xdma_engine *engine)
 	engine->regs->control = w;
 }
 
+static inline __attribute__((always_inline)) uint64_t current_clock_cycles()
+
+{
+
+	unsigned int eax_reg_rdtsc, edx_reg_rdtsc;
+
+	unsigned long long int uptime;
+
+	asm volatile  ("rdtsc\n\t" 
+			"mov %%eax, %0\n\t"
+			"mov %%edx, %1\n\t"
+
+			:       "=r" (eax_reg_rdtsc) , "=r" (edx_reg_rdtsc)
+
+			:
+
+			: "eax" , "edx"
+
+			);
+
+
+
+	uptime =  ((unsigned long long int)edx_reg_rdtsc << 32) | eax_reg_rdtsc;
+
+	return uptime;
+
+}
+
+
+
+static inline __attribute__((always_inline)) void delay_clock_cycles(uint64_t clock_cycles)
+
+{
+
+	register uint64_t start, end;
+
+
+
+	start = current_clock_cycles();
+
+	do {
+
+		end = current_clock_cycles();
+
+	} while ((end - start) < clock_cycles);
+
+
+
+}
 void *dma_rx(int *pkt_len)
 {
 	int extra_adj = DESC_CNT - 1, next_adj, j = 0, offset, sgdma_offset;
@@ -69,7 +119,7 @@ void *dma_rx(int *pkt_len)
 	volatile struct xdma_result *result;
 
 	rx_desc_start = data->rx_queue_dma_addr;
-	printf("trace :  func : %s line : %u rx_desc_start : %x\n",__func__,__LINE__,rx_desc_start);
+	//printf("trace :  func : %s line : %u rx_desc_start : %x\n",__func__,__LINE__,rx_desc_start);
 
 	read_p = data->coherent_mem_rx_dma_addr[0];
 	length = LENGTH; /*max pkt size recv is 4096*/
@@ -80,18 +130,17 @@ void *dma_rx(int *pkt_len)
 		return NULL;
 	}
 
-	printf("trace :  func : %s line : %u\n",__func__,__LINE__);
+	//printf("trace :  func : %s line : %u\n",__func__,__LINE__);
 	offset = H2C_CHANNEL_OFFSET + (channel * CHANNEL_SPACING);
 	sgdma_offset = offset + SGDMA_OFFSET_FROM_CHANNEL;
-	printf("offset : %x sgdma_offset : %x\n",offset ,sgdma_offset);
+	//printf("offset : %x sgdma_offset : %x\n",offset ,sgdma_offset);
 
-	printf("trace :  func : %s line : %u\n",__func__,__LINE__);
+	//printf("trace :  func : %s line : %u\n",__func__,__LINE__);
 	engine->regs = (struct engine_regs *)((uintptr_t)bar_base_user + offset);
 	engine->sgdma_regs = (struct engine_sgdma_regs *)((uintptr_t)bar_base_user + sgdma_offset);
 	engine->rx_result_buffer_bus = data->rx_result_dma_addr;
 	result = rx_result_virt;
-
-	printf("trace :  func : %s line : %u\n",__func__,__LINE__);
+	//printf("trace :  func : %s line : %u\n",__func__,__LINE__);
 	while (j < DESC_CNT) {
 		rx_desc_virt[j].dst_addr_lo = (PCI_DMA_L(read_p + (j * length)));
 		rx_desc_virt[j].dst_addr_hi = (PCI_DMA_H(read_p + j * length));
@@ -125,18 +174,20 @@ void *dma_rx(int *pkt_len)
 		rx_desc_virt[j].control = (control) | ((next_adj << 8) & 0x00003f00);
 		j++;
 	}
-	printf("trace :  func : %s line : %u\n",__func__,__LINE__);
+	//printf("trace :  func : %s line : %u\n",__func__,__LINE__);
+	result->length = 0;
+	engine->regs->completed_desc_count = 0;
 	w = (PCI_DMA_L(rx_desc_start));
-	printf("engine->sgdma_regs  : %p\n",engine->sgdma_regs);
-	printf("After accessing 1\n");
+	//printf("result->len : %d\n", result->length);
+	/*printf("After accessing 1\n");
 	printf("engine->sgdma_regs->first_desc_lo  : %x\n",engine->sgdma_regs->first_desc_lo);
-	printf("After accessing 2\n");
+	printf("After accessing 2\n");*/
 	engine->sgdma_regs->first_desc_lo = PCI_DMA_L(rx_desc_start);
-	printf("trace :  func : %s line : %u\n",__func__,__LINE__);
+	//printf("trace :  func : %s line : %u\n",__func__,__LINE__);
 	w = (PCI_DMA_H(rx_desc_start));
 	engine->sgdma_regs->first_desc_hi = PCI_DMA_H(rx_desc_start);
 	engine->sgdma_regs->first_desc_adjacent = extra_adj;
-	printf("trace :  func : %s line : %u\n",__func__,__LINE__);
+	//printf("trace :  func : %s line : %u\n",__func__,__LINE__);
 	w = (unsigned int)XDMA_CTRL_RUN_STOP;
 	w |= (unsigned int)XDMA_CTRL_IE_READ_ERROR;
 	w |= (unsigned int)XDMA_CTRL_IE_DESC_ERROR;
@@ -144,17 +195,23 @@ void *dma_rx(int *pkt_len)
 	w |= (unsigned int)XDMA_CTRL_IE_MAGIC_STOPPED;
 	w |= (unsigned int)XDMA_CTRL_POLL_MODE_WB;
 	engine->regs->control = w;
-	printf("trace :  func : %s line : %u\n",__func__,__LINE__);
+	//printf("trace :  func : %s line : %u\n",__func__,__LINE__);
+	//printf("waiting for rx dma to complete on channel %d\n",channel);
 	while (engine->regs->completed_desc_count < (DESC_CNT)) {
-		usleep(1);
+		if(!connected_to_guest) {
+			printf("returning from func : %s because of guest disconnection\n",__func__);
+			return;
+		}
+		//usleep(1);
+		delay_clock_cycles(3400);
 	}
-	printf("read() : completed_desc_count = %d\n", engine->regs->completed_desc_count);
+	//printf("read() : completed_desc_count = %d\n", engine->regs->completed_desc_count);
 	//for(i=0; i < LENGTH / 4; i++)
 	//	printf("%x", rd_data[i]);
-	
+	//*pkt_len = 0;	
+	//printf("b4 packet received len : %d\n",*pkt_len);
 	*pkt_len = result->length;
-	printf("packet received len : %d\n",*pkt_len);
-	//*pkt_len = 64;
+	//printf("aftr packet received len : %d\n",*pkt_len);
 	xdma_engine_stop(engine);
 	free(engine);
 	return (rd_data);
@@ -164,35 +221,35 @@ void *dma_rx(int *pkt_len)
 int dma_tx(char * pkt, int pkt_len, int pkt_offset)
 {
 	int extra_adj = DESC_CNT - 1, next_adj, j = 0, offset, sgdma_offset;
-        int channel, length;
+        int length;
 	unsigned int control, control_field, w;
 	//uint64_t write_p, tx_desc_start;
 	unsigned int write_p, tx_desc_start;
 	struct xdma_engine *engine;
 	int dir_from_dev = 0;
 
-	printf("pkt : %p pkt_len: %d pkt_offset : %d\n",pkt,pkt_len,pkt_offset);
+	//printf("pkt : %p pkt_len: %d pkt_offset : %d\n",pkt,pkt_len,pkt_offset);
 //	pkt_offset = 0; //overridden
 
-	printf("trace :  func : %s line : %u\n",__func__,__LINE__);
+	//printf("trace :  func : %s line : %u\n",__func__,__LINE__);
 
         tx_desc_start = data->tx_queue_dma_addr;
 	
 	write_p = (uintptr_t)data->coherent_mem_tx_dma_addr[0] + pkt_offset;
-	printf("trace :  func : %s line : %u\n",__func__,__LINE__);
+	//printf("trace :  func : %s line : %u\n",__func__,__LINE__);
 
 	engine = malloc(sizeof(struct xdma_engine));
 	if (!engine) {
 		printf("engine allocation failed");
 		return -1;
 	}
-	printf("trace :  func : %s line : %u\n",__func__,__LINE__);
+//	printf("trace :  func : %s line : %u\n",__func__,__LINE__);
 
 	offset = (channel * CHANNEL_SPACING);
 	sgdma_offset = offset + SGDMA_OFFSET_FROM_CHANNEL;
 	engine->regs = (struct engine_regs *)((uintptr_t)bar_base_user + offset);
 	engine->sgdma_regs = (struct engine_sgdma_regs *)((uintptr_t)bar_base_user + sgdma_offset);
-	printf("trace :  func : %s line : %u\n",__func__,__LINE__);
+//	printf("trace :  func : %s line : %u\n",__func__,__LINE__);
 	while (j < DESC_CNT) {
 		tx_desc_virt[j].src_addr_lo = (PCI_DMA_L(write_p + j * length));
 		tx_desc_virt[j].src_addr_hi = (PCI_DMA_H(write_p + j * length));
@@ -214,11 +271,11 @@ int dma_tx(char * pkt, int pkt_len, int pkt_offset)
 		
 		j++;
 	}
-	printf("trace :  func : %s line : %u\n",__func__,__LINE__);
+//	printf("trace :  func : %s line : %u\n",__func__,__LINE__);
 
 	w = (PCI_DMA_L((uint64_t)tx_desc_start));
 	engine->sgdma_regs->first_desc_lo = w;
-	printf("trace :  func : %s line : %u\n",__func__,__LINE__);
+//	printf("trace :  func : %s line : %u\n",__func__,__LINE__);
 	w = (PCI_DMA_H(tx_desc_start));
 	engine->sgdma_regs->first_desc_hi = w;
 	engine->sgdma_regs->first_desc_adjacent = extra_adj;
@@ -229,11 +286,18 @@ int dma_tx(char * pkt, int pkt_len, int pkt_offset)
 	w |= (unsigned int)XDMA_CTRL_IE_MAGIC_STOPPED;
 	w |= (unsigned int)XDMA_CTRL_POLL_MODE_WB;
 	engine->regs->control = w;
-	printf("trace :  func : %s line : %u\n",__func__,__LINE__);
+	//printf("waiting for tx dma to complete on channel %d\n",channel);
 	while (engine->regs->completed_desc_count < (DESC_CNT)) {
-		usleep(1);
+
+		if(!connected_to_guest) {
+			printf("returning from func : %s because of guest disconnection\n",__func__);
+			return;
+		}
+		delay_clock_cycles(3400);
+		//usleep(1);
+		
 	}
-	printf("simple_write() : engine->regs->completed_desc_count = %d\n", engine->regs->completed_desc_count);
+//	printf("simple_write() : engine->regs->completed_desc_count = %d\n", engine->regs->completed_desc_count);
 	xdma_engine_stop(engine);
 	free(engine);
 }
@@ -260,8 +324,8 @@ int init(int ch)
         read(configfd,data,sizeof(struct mydata));
 
         for(i = 0; i < NUM_BUFFERS; i++) {
-                printf("i : %d tx phys : %p rx phys : %p\n",i,
-                (void *)data->coherent_mem_tx_dma_addr[i],(void *)data->coherent_mem_rx_dma_addr[i]);
+  //              printf("i : %d tx phys : %p rx phys : %p\n",i,
+                //i//(void *)data->coherent_mem_tx_dma_addr[i],(void *)data->coherent_mem_rx_dma_addr[i]);
         }
 
 
@@ -320,7 +384,7 @@ int init(int ch)
                 printf("wr_data : %p\n", wr_data);
         }
 	
-	printf(" bar 0 -> h2c eng -> %x\n", *bar_base_user);
+//	printf(" bar 0 -> h2c eng -> %x\n", *bar_base_user);
         
 	//close(configfd);
         return 0;

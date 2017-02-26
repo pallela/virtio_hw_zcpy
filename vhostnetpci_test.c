@@ -118,6 +118,12 @@ void * transmit_thread(void *args)
 			temp = tx_avail->idx;
 			cur_avail_idx = tx_last_avail_idx;
 			new_avail_descs = temp - tx_last_avail_idx ;
+
+			if(new_avail_descs == 0) {
+				usleep(100);
+				continue;
+			}
+
 			rmb();// read correct values before proceeding
 			tx_last_avail_idx = temp;
 
@@ -131,7 +137,7 @@ void * transmit_thread(void *args)
 			//i = 0;
 			while(new_avail_descs--){
 
-				printf("packet no : %d\n",packet_no);
+				//printf("packet no : %d\n",packet_no);
 				desc_no = tx_avail->ring[cur_avail_idx];
 				//desc_no = (desc_no + 1)%tx_desc_count;
 				packet_len = tx_desc_base[desc_no].len;
@@ -186,7 +192,7 @@ void * transmit_thread(void *args)
 						//pcap_tx(handle,tx_packet_buff+vhost_hlen,tx_buff_len-vhost_hlen);
 						dma_tx(tx_packet_buff,tx_buff_len-vhost_hlen,vhost_hlen);
 						TXB +=  tx_buff_len-vhost_hlen;
-						printf("total sent bytes : %d\n",TXB);
+						//printf("total sent bytes : %d\n",TXB);
 
 
 
@@ -304,7 +310,7 @@ void * transmit_thread(void *args)
 			tx_cleanup_required = 1;
 			printf("tx thread, starting processing now\n");
 		}
-		usleep(1000);
+		//usleep(10);
 
 	}
 
@@ -848,6 +854,8 @@ main(int argc, char **argv)
 				}
 				#endif
 
+		#if 0
+
 				{
 					unsigned char *a,*b;
 					int matched = 0;
@@ -867,6 +875,7 @@ main(int argc, char **argv)
 					}
 					printf("matched : %d and not_matched : %d\n",matched,not_matched);
 				}	
+	#endif
 
 
 				break;	
@@ -949,9 +958,9 @@ main(int argc, char **argv)
 				printf("state->index : %d  state->num : %d ",state->index,state->num);
 				if(state->index == 0) {
 					connected_to_guest = 0;
-					printf("get_vring_base : waiting for tx to cleanup\n");
+					printf("get_vring_base : waiting for rx to cleanup\n");
 					sem_wait(&rx_clean_wait_sem);
-					printf("get_vring_base : tx cleanup done\n");
+					printf("get_vring_base : rx cleanup done\n");
 					state->num = rx_used->idx;
 					rx_avail = NULL;
 					rx_vring_ready = 0;
@@ -960,9 +969,9 @@ main(int argc, char **argv)
 				}
 				else if( state->index == 1) {
 					connected_to_guest = 0;
-					printf("get_vring_base : waiting for rx to cleanup\n");
+					printf("get_vring_base : waiting for tx to cleanup\n");
 					sem_wait(&tx_clean_wait_sem);
-					printf("get_vring_base : rx cleanup done\n");
+					printf("get_vring_base : tx cleanup done\n");
 					state->num = tx_used->idx;
 					//close(txirqfd);
 					//txirqfd = -1;

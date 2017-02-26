@@ -185,16 +185,16 @@ struct config_regs {
  * and their values are in little-endian byte ordering.
  */
 struct engine_regs {
-	unsigned int identifier;
-	unsigned int control;
-	unsigned int control_w1s;
-	unsigned int control_w1c;
+	volatile unsigned int identifier;
+	volatile unsigned int control;
+	volatile unsigned int control_w1s;
+	volatile unsigned int control_w1c;
 	unsigned int reserved_1[12];	/* padding */
 
-	unsigned int status;
-	unsigned int status_rc;
-	unsigned int completed_desc_count;
-	unsigned int alignments;
+	volatile unsigned int status;
+	volatile unsigned int status_rc;
+	volatile unsigned int completed_desc_count;
+	volatile unsigned int alignments;
 	unsigned int reserved_2[14];	/* padding */
 
 	unsigned int poll_mode_wb_lo;
