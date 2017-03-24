@@ -4,6 +4,7 @@
 
 #include<stdint.h>
 #include<errno.h>
+#include "address_trans_api.h"
 
 #define VHOST_USER_VERSION    0x1
 
@@ -202,6 +203,8 @@ struct address_translation
 	volatile uint64_t len;
 	volatile uint64_t offset;
 	int mapfd;
+        struct address_translation_table *table;
+	uint64_t *address_translation_table_offsets;
 };
 
 /* This marks a buffer as continuing via the next field. */

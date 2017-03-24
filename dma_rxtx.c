@@ -108,11 +108,12 @@ static inline __attribute__((always_inline)) void delay_clock_cycles(uint64_t cl
 
 
 }
-void *dma_rx(int *pkt_len)
+void *dma_rx(void* rxbuff,int *pkt_len)
 {
 	int extra_adj = DESC_CNT - 1, next_adj, j = 0, offset, sgdma_offset;
 	int length, i;
-	volatile unsigned int read_p, rx_desc_start;
+	//volatile unsigned int read_p, rx_desc_start;
+	uint64_t read_p, rx_desc_start;
 	unsigned int control, w;
 	struct xdma_engine *engine;
 	int dir_from_dev = 0;
@@ -121,8 +122,10 @@ void *dma_rx(int *pkt_len)
 	rx_desc_start = data->rx_queue_dma_addr;
 	//printf("trace :  func : %s line : %u rx_desc_start : %x\n",__func__,__LINE__,rx_desc_start);
 
-	read_p = data->coherent_mem_rx_dma_addr[0];
-	length = LENGTH; /*max pkt size recv is 4096*/
+	//read_p = data->coherent_mem_rx_dma_addr[0];
+	read_p = (uint64_t) rxbuff;
+	//length = LENGTH; /*max pkt size recv is 4096*/
+	length = *pkt_len; /*max pkt size recv */
 
 	engine = malloc(sizeof(struct xdma_engine));
 	if (!engine) {
@@ -203,7 +206,8 @@ void *dma_rx(int *pkt_len)
 			return;
 		}
 		//usleep(1);
-		delay_clock_cycles(3400);
+		//delay_clock_cycles(3400);
+		delay_clock_cycles(400);
 	}
 	//printf("read() : completed_desc_count = %d\n", engine->regs->completed_desc_count);
 	//for(i=0; i < LENGTH / 4; i++)
@@ -223,8 +227,8 @@ int dma_tx(char * pkt, int pkt_len, int pkt_offset)
 	int extra_adj = DESC_CNT - 1, next_adj, j = 0, offset, sgdma_offset;
         int length;
 	unsigned int control, control_field, w;
-	//uint64_t write_p, tx_desc_start;
-	unsigned int write_p, tx_desc_start;
+	uint64_t write_p, tx_desc_start;
+	//unsigned int write_p, tx_desc_start;
 	struct xdma_engine *engine;
 	int dir_from_dev = 0;
 
@@ -235,7 +239,8 @@ int dma_tx(char * pkt, int pkt_len, int pkt_offset)
 
         tx_desc_start = data->tx_queue_dma_addr;
 	
-	write_p = (uintptr_t)data->coherent_mem_tx_dma_addr[0] + pkt_offset;
+	//write_p = (uintptr_t)data->coherent_mem_tx_dma_addr[0] + pkt_offset;
+	write_p = (uint64_t) pkt;
 	//printf("trace :  func : %s line : %u\n",__func__,__LINE__);
 
 	engine = malloc(sizeof(struct xdma_engine));
@@ -293,7 +298,8 @@ int dma_tx(char * pkt, int pkt_len, int pkt_offset)
 			printf("returning from func : %s because of guest disconnection\n",__func__);
 			return;
 		}
-		delay_clock_cycles(3400);
+		//delay_clock_cycles(3400);
+		delay_clock_cycles(400);
 		//usleep(1);
 		
 	}

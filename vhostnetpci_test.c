@@ -13,16 +13,93 @@
 #include"pcap_rxtx.h"
 #include<semaphore.h>
 #include"dma_rxtx.h"
+#include <fcntl.h>
+
 
 //#define SOCKPATH "/usr/local/var/run/openvswitch/vhost-user1"
 #define SOCKPATH "vhost-user1"
 
-
+#define PMEMCPY_TX 0
 pcap_t *handle;
 uint64_t guestphyddr_to_vhostvadd(uint64_t gpaddr);
 uint64_t qemuvaddr_to_vhostvadd(uint64_t qaddr);
+uint64_t guestphyddr_to_hostphysaddr(uint64_t gpaddr);
+
+static int addrtransfd;
 
 
+#define CACHE_ALIGN 64
+static inline clflush_multiple(volatile void *__p,int size)
+{
+	int i,cnt;
+	void *addr;
+	
+	addr = (void *) ((uintptr_t)__p - ((uintptr_t)__p)%CACHE_ALIGN);
+	printf("__p  : %llx and addr : %llx\n",__p,addr);
+	cnt =  size/CACHE_ALIGN + 1;
+
+	for(i=0;i<cnt;i++) {
+    		//asm volatile("clflush %0" : "+m" (*(volatile char *)__p));
+
+		asm volatile("clflush %0" : "+m" (*(volatile  char *) addr));
+		addr += CACHE_ALIGN;
+	}
+	
+
+	
+	
+}
+
+static inline __attribute__((always_inline)) uint64_t current_clock_cycles()
+
+{
+	unsigned int eax_reg_rdtsc, edx_reg_rdtsc;
+	unsigned long long int uptime;
+
+	asm volatile  ("rdtsc\n\t"
+			"mov %%eax, %0\n\t"
+			"mov %%edx, %1\n\t"
+			:       "=r" (eax_reg_rdtsc) , "=r" (edx_reg_rdtsc)
+			:
+			: "eax" , "edx"
+			);
+
+
+	uptime =  ((unsigned long long int)edx_reg_rdtsc << 32) | eax_reg_rdtsc;
+	return uptime;
+
+}
+
+
+void generate_offsets_info(struct address_translation *table)
+{
+	int i,count,cur_offset = 0;
+	uint64_t *offsets;
+
+	count = table->table->nr_entries;
+
+	table->address_translation_table_offsets = malloc(count*sizeof(uint64_t));
+
+	if(!table->address_translation_table_offsets) {
+		table->address_translation_table_offsets =  NULL;
+		printf("cannot allocate offsets table\n");
+	}
+
+	offsets = table->address_translation_table_offsets;
+
+	for(i=0;i<count;i++) {
+		offsets[i] = cur_offset;
+		cur_offset += table->table->table[i].len; 
+	}
+}
+
+void release_offsets_info(struct address_translation *table) 
+{
+
+	if(table->address_translation_table_offsets) {
+		free(table->address_translation_table_offsets);
+	}
+}
 
 void write_to_file(void *addr, uint64_t mapsize,char *fpath)
 {
@@ -87,8 +164,7 @@ sem_t tx_clean_wait_sem,rx_clean_wait_sem;
 
 
 static unsigned char rx_packet_buff[10*1024];
-//static unsigned char tx_packet_buff[10*1024];
-unsigned char *tx_packet_buff;
+unsigned char tx_packet_buff[10*1024] __attribute__ ((aligned(4096)));
 
 
 void * transmit_thread(void *args)
@@ -106,6 +182,8 @@ void * transmit_thread(void *args)
 	struct vring_desc temp_desc;
 	int tx_buff_len = 0;
 	int tx_cleanup_required = 0;
+	uint64_t start_clocks,end_clocks;
+	int chunkno = 0;
 
 
 	printf("starting transmit thread \n");
@@ -120,7 +198,7 @@ void * transmit_thread(void *args)
 			new_avail_descs = temp - tx_last_avail_idx ;
 
 			if(new_avail_descs == 0) {
-				usleep(100);
+				usleep(1);
 				continue;
 			}
 
@@ -149,6 +227,7 @@ void * transmit_thread(void *args)
 				//printf("avail desc [%04d] : %04d\n",cur_avail_idx,tx_avail->ring[cur_avail_idx]);
 				//desc_no = tx_avail->ring[cur_avail_idx];
 				tx_buff_len = 0;
+				chunkno=0;
 
 				while(1) {
 
@@ -156,63 +235,34 @@ void * transmit_thread(void *args)
 
 					//if(tx_desc_base[desc_no].flags & VRING_DESC_F_NEXT) {
 					if(temp_desc.flags & VRING_DESC_F_NEXT) {
-						packet_addr = (unsigned char *) guestphyddr_to_vhostvadd(tx_desc_base[desc_no].addr);
+						chunkno++;
+						//packet_addr  =  (unsigned char *) guestphyddr_to_vhostvadd(tx_desc_base[desc_no].addr);
 						packet_len = tx_desc_base[desc_no].len;
-						//printf("(next flag) desc no : %d len : %d\n",desc_no,packet_len);
-						//print_hex(packet_addr,packet_len);
-						//desc_no = (desc_no + 1)%tx_desc_count;
+						//printf("packet vhost addr(chunk)  : %llx chunk len : %u\n",packet_addr,packet_len);
+						//clflush_multiple(packet_addr,packet_len);
 						desc_no = tx_desc_base[desc_no].next;
-						memcpy(tx_packet_buff + tx_buff_len,packet_addr,packet_len);
 						tx_buff_len += packet_len;
 					}
 					else {
-						packet_addr = (unsigned char *) guestphyddr_to_vhostvadd(tx_desc_base[desc_no].addr);
+						chunkno++;
+						//packet_addr  =  (unsigned char *) guestphyddr_to_vhostvadd(tx_desc_base[desc_no].addr);
+						//printf("packet vhost addr  : %llx\n",packet_addr);
 						packet_len = tx_desc_base[desc_no].len;
-						//printf("desc no : %d len : %d\n",desc_no,packet_len);
+						//clflush_multiple(packet_addr,packet_len);
+
+						packet_addr  =  (unsigned char *) guestphyddr_to_hostphysaddr(tx_desc_base[desc_no].addr);
+						//printf("tx paddr : %llx\n",packet_addr);
 						rmb();
-						packet_hdr = (struct virtio_net_hdr_mrg_rxbuf*) packet_addr;
-
-						//printf("num buffers : %02x\n",packet_hdr->num_buffers);
-						//printf("flags : %02x\n",packet_hdr->hdr.flags);
-						//printf("gso_type : %02x\n",packet_hdr->hdr.gso_type);
-						//printf("hdr_len : %02x\n",packet_hdr->hdr.hdr_len);
-						//printf("gso_size : %02x\n",packet_hdr->hdr.gso_size);
-						//printf("csum_start : %02x\n",packet_hdr->hdr.csum_start);
-						//printf("csum_offset : %02x\n",packet_hdr->hdr.csum_offset);
-
-						//print_hex(packet_addr,packet_len);
-						//desc_no = tx_desc_base[desc_no].next;
-						//printf("next desc no may be : %d and next desc data len : %d\n",
-						//desc_no,tx_desc_base[desc_no].len);
-						//pcap_tx(handle,packet_addr+vhost_hlen,packet_len-vhost_hlen);
-
-						memcpy(tx_packet_buff + tx_buff_len,packet_addr,packet_len);
+						//packet_hdr = (struct virtio_net_hdr_mrg_rxbuf*) packet_addr;
 						tx_buff_len += packet_len;
-						//print_hex(tx_packet_buff,tx_buff_len);
-						//pcap_tx(handle,tx_packet_buff+vhost_hlen,tx_buff_len-vhost_hlen);
-						dma_tx(tx_packet_buff,tx_buff_len-vhost_hlen,vhost_hlen);
+						//printf("packet paddr  : %llx pkt len : %d\n",packet_addr,tx_buff_len- vhost_hlen);
+						if(chunkno == 1) {
+							dma_tx(packet_addr+vhost_hlen,tx_buff_len-vhost_hlen,0); //TODO , why to add vhost_hlen
+						}
+						else {
+							dma_tx(packet_addr,tx_buff_len-vhost_hlen,0); //TODO , why to add vhost_hlen
+						}
 						TXB +=  tx_buff_len-vhost_hlen;
-						//printf("total sent bytes : %d\n",TXB);
-
-
-
-						#if 0 /* loopback */
-						printf("loopback packet_no : %d\n",packet_no);
-						tmp = (unsigned char *)guestphyddr_to_vhostvadd(rx_desc_base[rx_desc_num].addr);
-						memset(tmp,0,10);
-						tmp = (unsigned char *)guestphyddr_to_vhostvadd(rx_desc_base[rx_desc_num+1].addr);
-						memcpy(tmp,packet_addr,packet_len);
-						rx_used->ring[rx_ring_no].id = rx_desc_num;
-						rx_used->ring[rx_ring_no].len = 10 + packet_len;
-						rx_desc_num = (rx_desc_num+2)%rx_desc_count;
-						rx_ring_no = (rx_ring_no +1)%rx_desc_count;
-						wmb();
-						rx_used->idx++;
-						wmb();
-						eventfd_write(rxirqfd, (eventfd_t)1);
-						wmb();
-						printf("packets received : %d\n",rx_used->idx);
-						#endif
 
 						break;
 					}
@@ -321,6 +371,44 @@ unsigned char memory_table[100*1024];
 pthread_t tx_thread;
 pthread_t rx_thread;
 
+uint64_t guestphyddr_to_hostphysaddr(uint64_t gpaddr)
+{
+	int i,j,pcnt;
+	int64_t offset,local_offset,found = 0;
+	uint64_t ret = 0;
+
+	for(i=0;i<translation_table_count;i++) {
+
+		if(gpaddr >= translation_table[i].guestphyaddr && gpaddr <=  translation_table[i].guestphyaddr + translation_table[i].len){
+			offset = (gpaddr - translation_table[i].guestphyaddr);
+			//printf("found gpaddr : %llx in table entry : %d offset : %llx\n",
+			//		(unsigned long long int)gpaddr,i,(unsigned long long int)offset);
+			offset += translation_table[i].offset;
+			//printf("translated address : %llx\n",(unsigned long long int) ret);
+			pcnt = translation_table[i].table->nr_entries;
+			found = 1;
+			break;
+
+		}
+	}
+
+	if(found) {
+		for(j=0;j<pcnt;j++) {
+			if(offset > translation_table[i].table->table[j].len) {
+				offset -= translation_table[i].table->table[j].len;
+			}
+			else {
+				//printf("found at entry : %d phys entry : %d start addr : %llx offset : %llx\n",i,j,translation_table[i].table->table[j].physaddr,offset);
+				ret = translation_table[i].table->table[j].physaddr + offset;
+				break;
+			}
+		}
+	}
+
+	//printf("paddr : %llx\n",ret);
+	return ret;
+
+}
 
 uint64_t guestphyddr_to_vhostvadd(uint64_t gpaddr)
 {
@@ -519,7 +607,12 @@ main(int argc, char **argv)
 	char SOCKPATH_NEW[100];
 	char channel_str[10];
 
+	addrtransfd = open("/sys/kernel/debug/userpagesexample",O_RDWR);
 
+	if(addrtransfd < 0) {
+		perror("Open call failed\n");
+		return -1;
+	}
 
 	sem_init(&tx_start_wait_sem,0,0);
 	sem_init(&rx_start_wait_sem,0,0);
@@ -642,6 +735,8 @@ main(int argc, char **argv)
 					int i;
 					for(i=0;i<translation_table_count;i++ ) {
 						munmap((void *)translation_table[i].vhostuservirtaddr,translation_table[i].len);
+						release_offsets_info(&translation_table[i]);
+						free(translation_table[i].table);
 						close(translation_table[i].mapfd);
 					}
 					translation_table_count = -1;
@@ -825,6 +920,13 @@ main(int argc, char **argv)
 						translation_table[i].len = mapsize;
 						translation_table[i].offset = table->regions[i].mmap_offset;
 						translation_table[i].mapfd = msg->fds[i];
+						translation_table[i].table = get_physaddr_translation(\
+								(void *)translation_table[i].vhostuservirtaddr,
+								translation_table[i].len,
+								addrtransfd);
+
+						generate_offsets_info(&translation_table[i]);
+
 
 						//write_to_file(addr,mapsize,"/tmp/image.dat");
 					}
@@ -993,6 +1095,8 @@ main(int argc, char **argv)
 					int i;
 					for(i=0;i<translation_table_count;i++ ) {
 						munmap((void *)translation_table[i].vhostuservirtaddr,translation_table[i].len);
+						release_offsets_info(&translation_table[i]);
+						free(translation_table[i].table);
 						close(translation_table[i].mapfd);
 					}
 					translation_table_count = -1;
